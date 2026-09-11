@@ -4282,7 +4282,7 @@ time_t BlueZ_HCI_ConnectAndDownload(int BlueToothDevice_Handle, Govee_Device & T
 												int iTemp = int(data->buf[index]) << 16 | int(data->buf[index + 1]) << 8 | int(data->buf[index + 2]);
 												bool bNegative = iTemp & 0x800000;	// check sign bit
 												iTemp = iTemp & 0x7ffff;			// mask off sign bit
-												double Temperature = float(iTemp) / 10000.0;
+												double Temperature = float(iTemp / 1000) / 10.0; // packed as temp*1000 + humidity*10, same as the H5075 advertisement
 												double Humidity = float(iTemp % 1000) / 10.0;
 												if (bNegative)						// apply sign bit
 													Temperature = -1.0 * Temperature;
@@ -6461,7 +6461,7 @@ std::string bluez_dbus_msg_iter(DBusMessageIter& array_iter, const bdaddr_t& dbu
 									int iTemp = int(packet[index]) << 16 | int(packet[index + 1]) << 8 | int(packet[index + 2]);
 									bool bNegative = iTemp & 0x800000;	// check sign bit
 									iTemp = iTemp & 0x7ffff;			// mask off sign bit
-									double Temperature = float(iTemp) / 10000.0;
+									double Temperature = float(iTemp / 1000) / 10.0; // packed as temp*1000 + humidity*10, same as the H5075 advertisement
 									double Humidity = float(iTemp % 1000) / 10.0;
 									if (bNegative)						// apply sign bit
 										Temperature = -1.0 * Temperature;
