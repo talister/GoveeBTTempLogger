@@ -261,3 +261,8 @@ __pycache__/
 *.pyc
 /gvh-backup
 /__par_compile_fail
+
+# Serena MCP files
+.serena/cache/
+.serena/memories/
+
