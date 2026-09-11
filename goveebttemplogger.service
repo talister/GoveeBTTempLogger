@@ -20,7 +20,7 @@ Type=simple
 Restart=always
 RestartSec=1m
 User=goveebttemplogger
-Group=www-data
+Group=apache
 ExecStart=/usr/local/bin/goveebttemplogger \
     --verbose 0 \
     --log /var/log/goveebttemplogger \
