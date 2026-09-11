@@ -1414,6 +1414,7 @@ std::map<bdaddr_t, ThermometerType> GoveeThermometers;
 std::map<bdaddr_t, Govee_Temp> GoveeLastReading;
 std::map<bdaddr_t, std::queue<Ruuvi_Tag>> RuuviTags;
 std::map<bdaddr_t, Govee_Device> GoveeDevices;
+time_t TimeDownloadProgress(0); // last time a download data packet was decoded; a device being downloaded from stops advertising, so the silence watchdog must not count that time
 /////////////////////////////////////////////////////////////////////////////
 volatile bool bRun = true; // This is declared volatile so that the compiler won't optimized it out of loops later in the code
 void SignalHandlerSIGINT(int signal)
@@ -6453,6 +6454,7 @@ std::string bluez_dbus_msg_iter(DBusMessageIter& array_iter, const bdaddr_t& dbu
 								auto offset = uint16_t(packet[0]) << 8 | uint16_t(packet[1]);
 								if (ConsoleVerbosity > 1)
 									ssOutput << " " << ThermometerType2String(GoveeThermometers.find(dbusBTAddress)->second) << " offset: " << std::hex << std::setfill('0') << std::setw(4) << offset;
+								TimeDownloadProgress = TimeNow;
 								time_t LastReportedTime(0);
 								for (auto index = std::size_t(2); ((index < (packet.size() - 3) && (offset > 0))); index += 3)
 								{
@@ -7045,7 +7047,11 @@ int BlueZ_DBus_Mainloop(std::string& ControllerAddress, std::set<bdaddr_t>& BT_W
 							}
 							if ((MaxMinutesBetweenBluetoothAdvertisments > 0) && (TimeAdvertisment > 0))
 							{
-								if (difftime(TimeNow, TimeAdvertisment) > MaxMinutesBetweenBluetoothAdvertisments * 60) // Hack to force scanning restart regularly
+								// A device we are downloading from does not advertise while connected, so measure silence
+								// from the last download progress as well, otherwise a long download of the only device in
+								// range is guaranteed to be killed by this watchdog. A stalled download still trips it.
+								const time_t TimeLastActivity = std::max(TimeAdvertisment, TimeDownloadProgress);
+								if (difftime(TimeNow, TimeLastActivity) > MaxMinutesBetweenBluetoothAdvertisments * 60) // Hack to force scanning restart regularly
 								{
 									if (ConsoleVerbosity > 0)
 										std::cout << "[" << getTimeISO8601(true) << "] ";
