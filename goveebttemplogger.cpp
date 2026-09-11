@@ -257,6 +257,7 @@ enum class ThermometerType
 	H5105 = 5105,
 	H5110 = 5110,
 	H5111 = 5111,
+	H5171 = 5171,
 	H5174 = 5174,
 	H5177 = 5177,
 	H5179 = 5179,
@@ -291,6 +292,8 @@ std::string ThermometerType2String(const ThermometerType GoveeModel)
 		return(std::string("(GVH5110)"));
 	case ThermometerType::H5111:
 		return(std::string("(GVH5111)"));
+	case ThermometerType::H5171:
+		return(std::string("(GVH5171)"));
 	case ThermometerType::H5174:
 		return(std::string("(GVH5174)"));
 	case ThermometerType::H5177:
@@ -328,6 +331,8 @@ ThermometerType String2ThermometerType(const std::string Text)
 		rval = ThermometerType::H5110;
 	else if (std::regex_search(Text, std::regex("GVH5111|GV5111")))
 		rval = ThermometerType::H5111;
+	else if (std::regex_search(Text, std::regex("GVH5171|GV5171")))
+		rval = ThermometerType::H5171;
 	else if (std::regex_search(Text, std::regex("GVH5174")))
 		rval = ThermometerType::H5174;
 	else if (std::regex_search(Text, std::regex("GVH5177")))
@@ -664,13 +669,21 @@ bool Govee_Temp::ReadMSG(const uint16_t Manufacturer, const std::vector<uint8_t>
 		TemperatureMin[0] = TemperatureMax[0] = Temperature[0];	//HACK: make sure that these values are set
 		rval = true;
 	}
-	else if ((Manufacturer == 0x0001) && (Data.size() == 8))// GV5111xxxx
+	else if ((Manufacturer == 0x0001) && (Data.size() == 8))// GV5111xxxx or GV5171xxxx
 	{
 		// [2026-04-21T09:09:02] [DD:42:03:06:4D:36] ManufacturerData: 0001:01010332c0640000 (Temp) 21.0°C (Battery) 100% (GVH5111)
+		// [2026-09-10T18:00:00] [F2:3A:40:46:25:37] Name: GV51712537 ManufacturerData: 0001:0101039fe1490000 (Temp) 23.7°C (Humidity) 53.7% (Battery) 73% (GVH5171)
 		int iTemp = int(Data[2]) << 16 | int(Data[3]) << 8 | int(Data[4]);
 		bool bNegative = iTemp & 0x800000;	// check sign bit
 		iTemp = iTemp & 0x7ffff;			// mask off sign bit
-		Temperature[0] = float(iTemp) / 10000.0;
+		if (Model == ThermometerType::H5171)
+		{
+			// The H5111 has no humidity sensor, but the H5171 packs humidity into the low three digits like the H5075
+			Temperature[0] = float(iTemp / 1000) / 10.0;
+			Humidity = float(iTemp % 1000) / 10.0;
+		}
+		else
+			Temperature[0] = float(iTemp) / 10000.0;
 		if (bNegative)						// apply sign bit
 			Temperature[0] = -1.0 * Temperature[0];
 		Battery = int(Data[5]);
