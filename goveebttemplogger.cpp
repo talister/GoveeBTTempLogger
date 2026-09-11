@@ -6907,8 +6907,14 @@ int BlueZ_DBus_Mainloop(std::string& ControllerAddress, std::set<bdaddr_t>& BT_W
 						time_t TimeNow(0);
 						do
 						{
-							// Wait for access to the D-Bus
-							if (!dbus_connection_read_write(dbus_conn, 1000)) // https://dbus.freedesktop.org/doc/api/html/group__DBusConnection.html#ga371163b4955a6e0bf0f1f70f38390c14
+							// Wait for access to the D-Bus.
+							// read_write() blocks until the socket has *new* data even when libdbus already holds
+							// queued messages from an earlier read, and only one message is popped per iteration.
+							// In a busy BLE environment that leaves a backlog that grows without bound and the
+							// advertisements processed fall further and further behind real time. Don't block
+							// while messages are still queued.
+							const int dbus_timeout_ms = (dbus_connection_get_dispatch_status(dbus_conn) == DBUS_DISPATCH_DATA_REMAINS) ? 0 : 1000;
+							if (!dbus_connection_read_write(dbus_conn, dbus_timeout_ms)) // https://dbus.freedesktop.org/doc/api/html/group__DBusConnection.html#ga371163b4955a6e0bf0f1f70f38390c14
 							{
 								time(&TimeNow);
 								if (ConsoleVerbosity > 0)
