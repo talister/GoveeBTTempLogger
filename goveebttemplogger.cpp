@@ -2125,7 +2125,8 @@ template <typename T> void WriteSVG(const std::vector<T>& TheValues, const std::
 				else
 					std::cerr << "Writing: " << SVGFileName.string() << " With Title: " << Title << std::endl;
 				std::ostringstream tempOString;
-				tempOString << "Temperature (" << std::fixed << std::setprecision(1) << TheValues[0].GetTemperature(Fahrenheit) << "\u00B0" << (Fahrenheit ? "F)" : "C)");
+				// tempOString << "Temperature (" << std::fixed << std::setprecision(1) << TheValues[0].GetTemperature(Fahrenheit) << "\u00B0" << (Fahrenheit ? "F)" : "C)");
+				tempOString << "Temp. (" << std::fixed << std::setprecision(1) << TheValues[0].GetTemperature(Fahrenheit) << "\u00B0" << (Fahrenheit ? "F/" : "C/")  << std::fixed << std::setprecision(1) << TheValues[0].GetTemperature(false) << "\u00B0" << "C)";
 				const std::string YLegendTemperature(tempOString.str());
 				tempOString.str("");
 				tempOString << "Humidity (" << std::fixed << std::setprecision(1) << TheValues[0].GetHumidity() << "%)";
