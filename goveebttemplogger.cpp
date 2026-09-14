@@ -7090,7 +7090,8 @@ int BlueZ_DBus_Mainloop(std::string& ControllerAddress, std::set<bdaddr_t>& BT_W
 							ssOutput = std::ostringstream(); // reinitialize my output stringstream
 						}
 						bluez_discovery(dbus_conn, BlueZAdapter.c_str(), false);
-						bluez_dbus_RemoveKnownDevices(dbus_conn, BlueZAdapter.c_str(), GoveeThermometers);
+						bluez_dbus_RemoveKnownDevices(dbus_conn, BlueZAdapter.c_str(), GoveeThermometers); // this clears GoveeDevices, losing each device's LastDownload time
+						ReadPersistenceFile(GoveeThermometers, GoveeDevices); // restore LastDownload (and HW/FW/SN) so the --download throttle survives this daily reconnect cycle
 						//bluez_filter_le(dbus_conn, BlueZAdapter.c_str(), false, false); // remove discovery filter
 					}
 					else
