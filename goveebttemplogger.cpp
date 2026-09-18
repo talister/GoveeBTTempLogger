@@ -2073,42 +2073,31 @@ template <typename T> void ReadMRTGData(const std::vector<T>& MRTGLog, std::vect
 		auto MonthSampleLast = MRTGLog.begin() + 1 + DAY_COUNT + WEEK_COUNT + MONTH_COUNT;
 		auto YearSampleFirst = MRTGLog.begin() + 2 + DAY_COUNT + WEEK_COUNT + MONTH_COUNT;
 		auto YearSampleLast = MRTGLog.begin() + 1 + DAY_COUNT + WEEK_COUNT + MONTH_COUNT + YEAR_COUNT;
+		// Note: a bucket can be invalid in the middle of the range (a real gap in coverage, e.g. an
+		// outage), not just past the end of history that's accumulated so far. Filtering instead of
+		// truncating at the first invalid entry keeps older, still-valid history visible instead of
+		// hiding all of it behind one gap.
 		if (graph == GraphType::daily)
 		{
-			TheValues.resize(DAY_COUNT);
-			std::copy(DaySampleFirst, DaySampleLast, TheValues.begin());
-			auto iter = TheValues.begin();
-			while (iter->IsValid() && (iter != TheValues.end()))
-				iter++;
-			TheValues.resize(iter - TheValues.begin());
-			TheValues.begin()->Time = MRTGLog.begin()->Time; //HACK: include the most recent time sample
+			TheValues.clear();
+			std::copy_if(DaySampleFirst, DaySampleLast, std::back_inserter(TheValues), [](const T& v) { return v.IsValid(); });
+			if (!TheValues.empty())
+				TheValues.begin()->Time = MRTGLog.begin()->Time; //HACK: include the most recent time sample
 		}
 		else if (graph == GraphType::weekly)
 		{
-			TheValues.resize(WEEK_COUNT);
-			std::copy(WeekSampleFirst, WeekSampleLast, TheValues.begin());
-			auto iter = TheValues.begin();
-			while (iter->IsValid() && (iter != TheValues.end()))
-				iter++;
-			TheValues.resize(iter - TheValues.begin());
+			TheValues.clear();
+			std::copy_if(WeekSampleFirst, WeekSampleLast, std::back_inserter(TheValues), [](const T& v) { return v.IsValid(); });
 		}
 		else if (graph == GraphType::monthly)
 		{
-			TheValues.resize(MONTH_COUNT);
-			std::copy(MonthSampleFirst, MonthSampleLast, TheValues.begin());
-			auto iter = TheValues.begin();
-			while (iter->IsValid() && (iter != TheValues.end()))
-				iter++;
-			TheValues.resize(iter - TheValues.begin());
+			TheValues.clear();
+			std::copy_if(MonthSampleFirst, MonthSampleLast, std::back_inserter(TheValues), [](const T& v) { return v.IsValid(); });
 		}
 		else if (graph == GraphType::yearly)
 		{
-			TheValues.resize(YEAR_COUNT);
-			std::copy(YearSampleFirst, YearSampleLast, TheValues.begin());
-			auto iter = TheValues.begin();
-			while (iter->IsValid() && (iter != TheValues.end()))
-				iter++;
-			TheValues.resize(iter - TheValues.begin());
+			TheValues.clear();
+			std::copy_if(YearSampleFirst, YearSampleLast, std::back_inserter(TheValues), [](const T& v) { return v.IsValid(); });
 		}
 	}
 }
@@ -2500,7 +2489,6 @@ template <typename T> void UpdateMRTGData(const bdaddr_t& TheAddress, const T& T
 				FakeMRTGFile[1] += TheValue; // averaged value up to DAY_SAMPLE size
 			}
 		}
-		bool ZeroAccumulator = false;
 		auto DaySampleFirst = FakeMRTGFile.begin() + 2;
 		auto DaySampleLast = FakeMRTGFile.begin() + 1 + DAY_COUNT;
 		auto WeekSampleFirst = FakeMRTGFile.begin() + 2 + DAY_COUNT;
@@ -2512,7 +2500,6 @@ template <typename T> void UpdateMRTGData(const bdaddr_t& TheAddress, const T& T
 		// For every time difference between FakeMRTGFile[1] and FakeMRTGFile[2] that's greater than DAY_SAMPLE we shift that data towards the back.
 		while (difftime(FakeMRTGFile[1].Time, DaySampleFirst->Time) > DAY_SAMPLE)
 		{
-			ZeroAccumulator = true;
 			// shuffle all the day samples toward the end
 			std::copy_backward(DaySampleFirst, DaySampleLast - 1, DaySampleLast);
 			*DaySampleFirst = FakeMRTGFile[1];
@@ -2552,10 +2539,12 @@ template <typename T> void UpdateMRTGData(const bdaddr_t& TheAddress, const T& T
 				for (auto iter = DaySampleFirst; (iter->IsValid() && ((iter - DaySampleFirst) < 6)); iter++) // Half an hour of day samples
 					*WeekSampleFirst += *iter;
 			}
-		}
-		if (ZeroAccumulator)
-		{
+			// Reset inside the loop (not just once after it exits), otherwise catching up more than one
+			// DAY_SAMPLE in a single call (e.g. after a long outage) restamps the same average into
+			// every intervening bucket instead of leaving them invalid.
+			auto NextAccumulatorTime = FakeMRTGFile[1].Time;
 			FakeMRTGFile[1] = T();
+			FakeMRTGFile[1].Time = NextAccumulatorTime;
 		}
 	}
 }
