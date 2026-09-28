@@ -915,7 +915,9 @@ public:
 		MACAddress({ 0 }),
 		Name(""), 
 		SerialNumber(0),
-		LastDownload(0),
+		LastDownload(0), 
+		IncompleteDownloads(0),
+		IncompleteDownloadTime(0),
 		CurrentData() 
 	{};
 	//Govee_Device(const std::string& data);
@@ -937,6 +939,20 @@ public:
 	unsigned short SetSerialNumber(unsigned short value) { auto oldValue = SerialNumber; SerialNumber = value; return(oldValue); }
 	time_t GetLastDownload(void) const { return(LastDownload); }
 	time_t SetLastDownload(time_t value) { auto oldValue = LastDownload; LastDownload = value; return(oldValue); }
+	// Govee devices regularly drop the connection a few thousand points into a long history download. Rather than
+	// waiting another DaysBetweenDataDownload to resume from LastDownload, retry after a short back-off, capped so
+	// a device that always drops doesn't have its battery drained by endless reconnects.
+	static constexpr unsigned MaxIncompleteDownloadRetries = 3;
+	static constexpr int IncompleteDownloadRetrySeconds = 120;
+	unsigned GetIncompleteDownloads(void) const { return(IncompleteDownloads); }
+	void SetDownloadIncomplete(const time_t TimeNow) { if (IncompleteDownloads <= MaxIncompleteDownloadRetries) IncompleteDownloads++; IncompleteDownloadTime = TimeNow; }
+	void SetDownloadComplete(void) { IncompleteDownloads = 0; }
+	bool IsDownloadDue(const time_t TimeNow) const
+	{
+		if (difftime(TimeNow, LastDownload) > (60 * 60 * 24 * DaysBetweenDataDownload))
+			return(true);
+		return((IncompleteDownloads > 0) && (IncompleteDownloads <= MaxIncompleteDownloadRetries) && (difftime(TimeNow, IncompleteDownloadTime) > IncompleteDownloadRetrySeconds));
+	}
 	std::array<uint8_t, 16> GetSessionKey(void) const { return(SessionKey); }
 	std::array<uint8_t, 16> SetSessionKey(const std::array<uint8_t, 16>& value) { auto oldValue = SessionKey; SessionKey = value; return(oldValue); }
 	std::map<std::string, std::string> bluez_Characteristics;
@@ -951,6 +967,8 @@ private:
 	bdaddr_t MACAddress;
 	unsigned short SerialNumber;
 	time_t LastDownload;
+	unsigned IncompleteDownloads;
+	time_t IncompleteDownloadTime;
 };
 Govee_Device::ConnectionState Govee_Device::NextState(void)
 {
@@ -6071,12 +6089,8 @@ std::string bluez_dbus_msg_iter(DBusMessageIter& array_iter, const bdaddr_t& dbu
 										// initiate connection here if we are set to download data
 										if ((DaysBetweenDataDownload > 0) && !LogDirectory.empty())
 										{
-											time_t LastDownloadTime = 0;
 											auto GoveeDevice = GoveeDevices.find(dbusBTAddress);
-											if (GoveeDevice != GoveeDevices.end())
-												LastDownloadTime = GoveeDevice->second.GetLastDownload();
-											// Don't try to download more often than once a week, because it uses more battery than just the advertisments
-											if (difftime(TimeNow, LastDownloadTime) > (60 * 60 * 24 * DaysBetweenDataDownload))
+											if ((GoveeDevice == GoveeDevices.end()) || GoveeDevice->second.IsDownloadDue(TimeNow))
 											{
 												if (GoveeDevice != GoveeDevices.end())
 												{
@@ -6215,13 +6229,22 @@ std::string bluez_dbus_msg_iter(DBusMessageIter& array_iter, const bdaddr_t& dbu
 					auto GoveeDevice = GoveeDevices.find(dbusBTAddress);
 					if (GoveeDevice != GoveeDevices.end())
 					{
-						GoveeDevice->second.ResetState();
+						// Disconnected means we ended the connection ourselves; Disconnect means we had decided to (the download
+						// completed) but the device beat us to it. Anything else is a connection lost mid-download or while still
+						// setting up notifications, and counts against the retry budget.
+						const auto StateAtDisconnect = GoveeDevice->second.ResetState();
+						if ((StateAtDisconnect != Govee_Device::ConnectionState::Disconnected) && (StateAtDisconnect != Govee_Device::ConnectionState::Disconnect))
+							GoveeDevice->second.SetDownloadIncomplete(TimeNow);
 						auto LastDownloadTime = GoveeDevice->second.GetLastDownload();
 						if (LastDownloadTime != 0)
 						{
 							if (!ssOutput.str().empty())
 								ssOutput << std::endl << ssStartLine.str();
-							ssOutput << "   Last Download from device: [" << ba2string(dbusBTAddress) << "] " << timeToExcelLocal(LastDownloadTime);;
+							ssOutput << "   Last Download from device: [" << ba2string(dbusBTAddress) << "] " << timeToExcelLocal(LastDownloadTime);
+							if ((GoveeDevice->second.GetIncompleteDownloads() > 0) && (GoveeDevice->second.GetIncompleteDownloads() <= Govee_Device::MaxIncompleteDownloadRetries))
+								ssOutput << " (incomplete, retry " << GoveeDevice->second.GetIncompleteDownloads() << " of " << Govee_Device::MaxIncompleteDownloadRetries << " in " << Govee_Device::IncompleteDownloadRetrySeconds << "s)";
+							else if (DaysBetweenDataDownload > 0)
+								ssOutput << " Next Download: " << timeToExcelLocal(LastDownloadTime + (60 * 60 * 24 * DaysBetweenDataDownload));
 							auto downloadtype = GoveeThermometers.find(dbusBTAddress);
 							if (downloadtype != GoveeThermometers.end())
 								ssOutput << " " << ThermometerType2String(downloadtype->second);
@@ -6254,9 +6277,7 @@ std::string bluez_dbus_msg_iter(DBusMessageIter& array_iter, const bdaddr_t& dbu
 							if ((DaysBetweenDataDownload > 0) && !LogDirectory.empty())
 								if (GoveeThermometers.find(dbusBTAddress) != GoveeThermometers.end())
 								{
-									auto LastDownloadTime = GoveeDevice->second.GetLastDownload();
-									// Don't try to download more often than once a week, because it uses more battery than just the advertisments
-									if (difftime(TimeNow, LastDownloadTime) > (60 * 60 * 24 * DaysBetweenDataDownload))
+									if (GoveeDevice->second.IsDownloadDue(TimeNow))
 										GoveeDevice->second.NextState();
 									else
 										GoveeDevice->second.SetState(Govee_Device::ConnectionState::Disconnect);
@@ -6445,7 +6466,7 @@ std::string bluez_dbus_msg_iter(DBusMessageIter& array_iter, const bdaddr_t& dbu
 									ssOutput << " " << ThermometerType2String(GoveeThermometers.find(dbusBTAddress)->second) << " offset: " << std::hex << std::setfill('0') << std::setw(4) << offset;
 								TimeDownloadProgress = TimeNow;
 								time_t LastReportedTime(0);
-								for (auto index = std::size_t(2); ((index < (packet.size() - 3) && (offset > 0))); index += 3)
+								for (auto index = std::size_t(2); (((index + 3) <= packet.size()) && (offset > 0)); index += 3)
 								{
 									int iTemp = int(packet[index]) << 16 | int(packet[index + 1]) << 8 | int(packet[index + 2]);
 									bool bNegative = iTemp & 0x800000;	// check sign bit
@@ -6470,7 +6491,10 @@ std::string bluez_dbus_msg_iter(DBusMessageIter& array_iter, const bdaddr_t& dbu
 								if (LastReportedTime != 0)
 									GoveeDevice->second.SetLastDownload(LastReportedTime);
 								if (offset <= 6)	// If offset is 6 or less we are in the last bit of data, and as soon as we decode it we can close the connection.
+								{
+									GoveeDevice->second.SetDownloadComplete();
 									GoveeDevice->second.NextState();
+								}
 							}
 
 						if (ConsoleVerbosity > 3)
@@ -6817,6 +6841,7 @@ int BlueZ_DBus_Mainloop(std::string& ControllerAddress, std::set<bdaddr_t>& BT_W
 	{
 		time(&TimeStart);
 		time_t TimeAdvertisment(TimeStart); // Initialize this to the current time so that we don't get a false positive on the first loop through if we don't see any advertisments for a while.
+		time_t TimeDiscoveryRestarted(0);
 		DBusError dbus_error;
 		dbus_error_init(&dbus_error); // https://dbus.freedesktop.org/doc/api/html/group__DBusErrors.html#ga8937f0b7cdf8554fa6305158ce453fbe
 		// Connect to the system bus
@@ -7033,6 +7058,26 @@ int BlueZ_DBus_Mainloop(std::string& ControllerAddress, std::set<bdaddr_t>& BT_W
 									for (auto& [btAddress, device] : GoveeDevices)
 										for (auto& [UUID, Path] : device.bluez_Characteristics)
 											std::cout << "[-------------------] [" << ba2string(btAddress) << "] " << UUID << " " << Path << std::endl;
+							}
+							{
+								// After a device connection BlueZ sometimes stops delivering advertisements even though it still reports
+								// Discovering=true. Bouncing discovery restores the flow in seconds rather than waiting for the silence
+								// watchdog to restart the whole process (and lose in-memory state such as download retries).
+								const int DiscoveryRestartSeconds(60);
+								const time_t TimeLastActivity = std::max({ TimeAdvertisment, TimeDownloadProgress, TimeDiscoveryRestarted });
+								bool bDeviceBusy(false);
+								for (auto& [btAddress, device] : GoveeDevices)
+									if (device.GetState() != Govee_Device::ConnectionState::Disconnected)
+										bDeviceBusy = true;
+								if (!bDeviceBusy && (difftime(TimeNow, TimeLastActivity) > DiscoveryRestartSeconds))
+								{
+									if (ConsoleVerbosity > 0)
+										std::cout << "[" << getTimeISO8601(true) << "] ";
+									std::cout << "No Bluetooth LE Advertisments for " << DiscoveryRestartSeconds << " seconds, restarting discovery" << std::endl;
+									bluez_discovery(dbus_conn, BlueZAdapter.c_str(), false);
+									bluez_discovery(dbus_conn, BlueZAdapter.c_str(), true);
+									TimeDiscoveryRestarted = TimeNow;
+								}
 							}
 							if ((MaxMinutesBetweenBluetoothAdvertisments > 0) && (TimeAdvertisment > 0))
 							{
