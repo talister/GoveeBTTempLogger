@@ -1909,7 +1909,10 @@ template <typename T> bool GenerateCacheFile(const bdaddr_t& TheBlueToothAddress
 }
 template <typename T> void GenerateCacheFile(std::map<bdaddr_t, std::vector<T>> &AddressTemperatureMap)
 {
-	if (!CacheDirectory.empty())
+	// The cache and logged history are only loaded into the MRTG data at startup when writing SVG files.
+	// Without --svg the MRTG data holds only this session's readings, and writing it would overwrite
+	// a good cache with a nearly empty one that hides the older history on the next --svg run.
+	if (!CacheDirectory.empty() && !SVGDirectory.empty())
 	{
 		if (ConsoleVerbosity > 1)
 			std::cout << "[" << getTimeISO8601(true) << "] GenerateCacheFile: " << CacheDirectory.native() << std::endl;
