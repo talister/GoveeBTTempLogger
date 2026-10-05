@@ -2534,8 +2534,12 @@ template <typename T> void UpdateMRTGData(const bdaddr_t& TheAddress, const T& T
 				// shuffle all the year samples toward the end
 				std::copy_backward(YearSampleFirst, YearSampleLast - 1, YearSampleLast);
 				*YearSampleFirst = T();
-				for (auto iter = DaySampleFirst; (iter->IsValid() && ((iter - DaySampleFirst) < (12 * 24))); iter++) // One Day of day samples
+				// Sum the whole window rather than stopping at the first invalid sample: operator+= skips invalid
+				// samples, and stopping early discards the entire period when the boundary sample itself is a gap.
+				for (auto iter = DaySampleFirst; (iter - DaySampleFirst) < (12 * 24); iter++) // One Day of day samples
 					*YearSampleFirst += *iter;
+				if (YearSampleFirst->IsValid())
+					YearSampleFirst->Time = DaySampleFirst->Time;
 			}
 			if ((DaySampleFirst->GetTimeGranularity() == T::granularity::year) ||
 				(DaySampleFirst->GetTimeGranularity() == T::granularity::month))
@@ -2545,8 +2549,10 @@ template <typename T> void UpdateMRTGData(const bdaddr_t& TheAddress, const T& T
 				// shuffle all the month samples toward the end
 				std::copy_backward(MonthSampleFirst, MonthSampleLast - 1, MonthSampleLast);
 				*MonthSampleFirst = T();
-				for (auto iter = DaySampleFirst; (iter->IsValid() && ((iter - DaySampleFirst) < (12 * 2))); iter++) // two hours of day samples
+				for (auto iter = DaySampleFirst; (iter - DaySampleFirst) < (12 * 2); iter++) // two hours of day samples
 					*MonthSampleFirst += *iter;
+				if (MonthSampleFirst->IsValid())
+					MonthSampleFirst->Time = DaySampleFirst->Time;
 			}
 			if ((DaySampleFirst->GetTimeGranularity() == T::granularity::year) ||
 				(DaySampleFirst->GetTimeGranularity() == T::granularity::month) ||
@@ -2557,8 +2563,10 @@ template <typename T> void UpdateMRTGData(const bdaddr_t& TheAddress, const T& T
 				// shuffle all the month samples toward the end
 				std::copy_backward(WeekSampleFirst, WeekSampleLast - 1, WeekSampleLast);
 				*WeekSampleFirst = T();
-				for (auto iter = DaySampleFirst; (iter->IsValid() && ((iter - DaySampleFirst) < 6)); iter++) // Half an hour of day samples
+				for (auto iter = DaySampleFirst; (iter - DaySampleFirst) < 6; iter++) // Half an hour of day samples
 					*WeekSampleFirst += *iter;
+				if (WeekSampleFirst->IsValid())
+					WeekSampleFirst->Time = DaySampleFirst->Time;
 			}
 			// Reset inside the loop (not just once after it exits), otherwise catching up more than one
 			// DAY_SAMPLE in a single call (e.g. after a long outage) restamps the same average into
