@@ -1751,29 +1751,45 @@ template <typename T> bool GenerateLogFile(std::map<bdaddr_t, std::queue<T>> &Ad
 			std::cout << "[" << getTimeISO8601(true) << "] GenerateLogFile: " << LogDirectory.native() << std::endl;
 		for (auto& [TheAddress, LogData] : AddressTemperatureMap)
 		{
-			if (!LogData.empty()) // Only open the log file if there are entries to add
+			// File each entry by its own timestamp, not the current time. Downloaded history can be weeks old, and
+			// if it lands in the current month's file ReadLoggedData discards it as older than data already read.
+			std::filesystem::path filename;
+			std::ofstream LogFile;
+			time_t MostRecentData(0);
+			auto CloseLogFile = [&]()
 			{
-				std::filesystem::path filename(GenerateLogFileName(TheAddress, LogData.front().GetModel()));
-				std::ofstream LogFile(filename, std::ios_base::out | std::ios_base::app | std::ios_base::ate);
-				if (LogFile.is_open())
+				LogFile.close();
+				struct utimbuf Log_ut({ 0 });
+				Log_ut.actime = MostRecentData;
+				Log_ut.modtime = MostRecentData;
+				utime(filename.c_str(), &Log_ut);
+				rval = true;
+				if (ConsoleVerbosity > 1)
+					std::cout << "[" << getTimeISO8601(true) << "] Writing: " << filename.native() << std::endl;
+			};
+			while (!LogData.empty())
+			{
+				std::filesystem::path EntryFilename(GenerateLogFileName(TheAddress, LogData.front().GetModel(), LogData.front().Time));
+				if (EntryFilename != filename)
 				{
-					time_t MostRecentData(0);
-					while (!LogData.empty())
-					{
-						LogFile << LogData.front().WriteTXT() << std::endl;
-						MostRecentData = std::max(LogData.front().Time, MostRecentData);
-						LogData.pop();
-					}
-					LogFile.close();
-					struct utimbuf Log_ut({ 0 });
-					Log_ut.actime = MostRecentData;
-					Log_ut.modtime = MostRecentData;
-					utime(filename.c_str(), &Log_ut);
-					rval = true;
-					if (ConsoleVerbosity > 1)
-						std::cout << "[" << getTimeISO8601(true) << "] Writing: " << filename.native() << std::endl;
+					if (LogFile.is_open())
+						CloseLogFile();
+					filename = EntryFilename;
+					// Start from the file's existing time so appending older data doesn't move it backwards
+					MostRecentData = 0;
+					struct stat64 FileStat({ 0 });
+					if (0 == stat64(filename.c_str(), &FileStat))
+						MostRecentData = FileStat.st_mtim.tv_sec;
+					LogFile.open(filename, std::ios_base::out | std::ios_base::app | std::ios_base::ate);
+					if (!LogFile.is_open())
+						break;	// leave the remaining entries queued for the next attempt
 				}
+				LogFile << LogData.front().WriteTXT() << std::endl;
+				MostRecentData = std::max(LogData.front().Time, MostRecentData);
+				LogData.pop();
 			}
+			if (LogFile.is_open())
+				CloseLogFile();
 		}
 	}
 	else
