@@ -918,6 +918,7 @@ public:
 		LastDownload(0), 
 		IncompleteDownloads(0),
 		IncompleteDownloadTime(0),
+		NotifySessions(false),
 		CurrentData() 
 	{};
 	//Govee_Device(const std::string& data);
@@ -953,6 +954,11 @@ public:
 			return(true);
 		return((IncompleteDownloads > 0) && (IncompleteDownloads <= MaxIncompleteDownloadRetries) && (difftime(TimeNow, IncompleteDownloadTime) > IncompleteDownloadRetrySeconds));
 	}
+	// BlueZ keeps a client's StartNotify sessions across a disconnect and silently re-registers them on reconnect,
+	// leaving Notifying=true, so a second StartNotify never produces the PropertiesChanged(Notifying=true) the
+	// download state machine waits for. Track whether we started sessions so they can be stopped before reconnecting.
+	bool GetNotifySessions(void) const { return(NotifySessions); }
+	void SetNotifySessions(bool value) { NotifySessions = value; }
 	std::array<uint8_t, 16> GetSessionKey(void) const { return(SessionKey); }
 	std::array<uint8_t, 16> SetSessionKey(const std::array<uint8_t, 16>& value) { auto oldValue = SessionKey; SessionKey = value; return(oldValue); }
 	std::map<std::string, std::string> bluez_Characteristics;
@@ -969,6 +975,7 @@ private:
 	time_t LastDownload;
 	unsigned IncompleteDownloads;
 	time_t IncompleteDownloadTime;
+	bool NotifySessions;
 };
 Govee_Device::ConnectionState Govee_Device::NextState(void)
 {
@@ -5485,6 +5492,33 @@ void bluez_enable_notifications(DBusConnection* dbus_conn, const char* adapter_p
 	else
 		std::cerr << ssOutput.str();
 }
+
+void bluez_disable_notifications(DBusConnection* dbus_conn, const char* adapter_path, const bdaddr_t& dbusBTAddress)
+{
+	std::ostringstream ssOutput;
+	if (ConsoleVerbosity > 2) ssOutput << "[                   ] [" << ba2string(dbusBTAddress) << "] " << adapter_path << " " << __func__ << std::endl;
+	auto GoveeDevice = GoveeDevices.find(dbusBTAddress);
+	if (GoveeDevice != GoveeDevices.end())
+		for (auto& [UUID, Path] : GoveeDevice->second.bluez_Characteristics)
+		{
+			if (!UUID.compare("494e5445-4c4c-495f-524f-434b535f2011") ||
+				!UUID.compare("494e5445-4c4c-495f-524f-434b535f2012") ||
+				!UUID.compare("494e5445-4c4c-495f-524f-434b535f2013") ||
+				!UUID.compare("00010203-0405-0607-0809-0a0b0c0d2b10") ||
+				!UUID.compare("02f00000-0000-0000-0000-00000000ff02"))
+			{
+				DBusMessage* dbus_msg_disable_notification = dbus_message_new_method_call("org.bluez", Path.c_str(), "org.bluez.GattCharacteristic1", "StopNotify");
+				dbus_connection_send(dbus_conn, dbus_msg_disable_notification, nullptr);
+				if (ConsoleVerbosity > 3)
+					ssOutput << "[-------------------] " << UUID << " " << dbus_message_get_path(dbus_msg_disable_notification) << " " << dbus_message_get_interface(dbus_msg_disable_notification) << ": " << dbus_message_get_member(dbus_msg_disable_notification) << std::endl;
+				dbus_message_unref(dbus_msg_disable_notification);
+			}
+		}
+	if (ConsoleVerbosity > 0)
+		std::cout << ssOutput.str();
+	else
+		std::cerr << ssOutput.str();
+}
 bool bluez_Write_TX(DBusConnection* dbus_conn, const char* adapter_path, const bdaddr_t& dbusBTAddress, const bool TX1 = true)
 {
 	bool rval = false;
@@ -6994,11 +7028,17 @@ int BlueZ_DBus_Mainloop(std::string& ControllerAddress, std::set<bdaddr_t>& BT_W
 											{
 											case Govee_Device::ConnectionState::StartConnect:
 												GoveeDevice->second.NextState();
+												if (GoveeDevice->second.GetNotifySessions())
+												{
+													bluez_disable_notifications(dbus_conn, BlueZAdapter.c_str(), localBTAddress);
+													GoveeDevice->second.SetNotifySessions(false);
+												}
 												bluez_device_connect(dbus_conn, BlueZAdapter.c_str(), localBTAddress);
 												break;
 											case Govee_Device::ConnectionState::StartNotify:
 												GoveeDevice->second.NextState();
 												bluez_enable_notifications(dbus_conn, BlueZAdapter.c_str(), localBTAddress);
+												GoveeDevice->second.SetNotifySessions(true);
 												break;
 											case Govee_Device::ConnectionState::SendTX1:
 												GoveeDevice->second.NextState();
