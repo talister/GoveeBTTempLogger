@@ -6956,6 +6956,8 @@ int BlueZ_DBus_Mainloop(std::string& ControllerAddress, std::set<bdaddr_t>& BT_W
 		time(&TimeStart);
 		time_t TimeAdvertisment(TimeStart); // Initialize this to the current time so that we don't get a false positive on the first loop through if we don't see any advertisments for a while.
 		time_t TimeDiscoveryRestarted(0);
+		time_t TimeBluetoothSignal(TimeStart); // last signal about any Bluetooth device, not only the thermometers
+		time_t TimeAdapterPowerCycled(0);
 		DBusError dbus_error;
 		dbus_error_init(&dbus_error); // https://dbus.freedesktop.org/doc/api/html/group__DBusErrors.html#ga8937f0b7cdf8554fa6305158ce453fbe
 		// Connect to the system bus
@@ -7074,6 +7076,9 @@ int BlueZ_DBus_Mainloop(std::string& ControllerAddress, std::set<bdaddr_t>& BT_W
 											bluez_dbus_msg_InterfacesAdded(dbus_msg, localBTAddress, BT_WhiteList, TimeNow);
 										else if (!dbus_msg_Member.compare("PropertiesChanged"))
 											bluez_dbus_msg_PropertiesChanged(dbus_msg, localBTAddress, BT_WhiteList, TimeNow);
+										const bdaddr_t NoAddress({ 0 });
+										if (0 != bacmp(&localBTAddress, &NoAddress))
+											TimeBluetoothSignal = TimeNow;
 										auto GoveeDevice = GoveeDevices.find(localBTAddress);
 										if (GoveeDevice != GoveeDevices.end())
 										{
@@ -7197,6 +7202,28 @@ int BlueZ_DBus_Mainloop(std::string& ControllerAddress, std::set<bdaddr_t>& BT_W
 									std::cout << "No Bluetooth LE Advertisments for " << DiscoveryRestartSeconds << " seconds, restarting discovery" << std::endl;
 									bluez_discovery(dbus_conn, BlueZAdapter.c_str(), false);
 									bluez_discovery(dbus_conn, BlueZAdapter.c_str(), true);
+									TimeDiscoveryRestarted = TimeNow;
+								}
+								// A wedged adapter still reports Powered and Discovering but receives nothing at all, and neither
+								// bouncing discovery nor restarting this process brings it back; switching it off and on does.
+								// Require silence from every device, not only the thermometers, so thermometers that are merely
+								// out of range don't cause other devices using the adapter to be disconnected.
+								const int AdapterPowerCycleSeconds(180);
+								const int AdapterPowerCycleRetrySeconds(600);
+								if (!bDeviceBusy &&
+									(difftime(TimeNow, TimeBluetoothSignal) > AdapterPowerCycleSeconds) &&
+									(difftime(TimeNow, TimeAdapterPowerCycled) > AdapterPowerCycleRetrySeconds))
+								{
+									if (ConsoleVerbosity > 0)
+										std::cout << "[" << getTimeISO8601(true) << "] ";
+									std::cout << "No Bluetooth signals from any device for " << AdapterPowerCycleSeconds << " seconds, power cycling adapter" << std::endl;
+									bluez_power_on(dbus_conn, BlueZAdapter.c_str(), false);
+									sleep(3);
+									bluez_power_on(dbus_conn, BlueZAdapter.c_str(), true);
+									bluez_filter_le(dbus_conn, BlueZAdapter.c_str()); // BlueZ drops discovery filters and sessions when the adapter powers down
+									bluez_discovery(dbus_conn, BlueZAdapter.c_str(), true);
+									time(&TimeNow);
+									TimeAdapterPowerCycled = TimeNow;
 									TimeDiscoveryRestarted = TimeNow;
 								}
 							}
