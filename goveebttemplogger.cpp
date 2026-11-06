@@ -919,6 +919,7 @@ public:
 		IncompleteDownloads(0),
 		IncompleteDownloadTime(0),
 		NotifySessions(false),
+		MRTGRebuildDue(false),
 		CurrentData() 
 	{};
 	//Govee_Device(const std::string& data);
@@ -959,6 +960,9 @@ public:
 	// download state machine waits for. Track whether we started sessions so they can be stopped before reconnecting.
 	bool GetNotifySessions(void) const { return(NotifySessions); }
 	void SetNotifySessions(bool value) { NotifySessions = value; }
+	// Downloaded history only reaches the log files, so the graphs need rebuilding from the logs once it has been written.
+	bool IsMRTGRebuildDue(void) const { return(MRTGRebuildDue); }
+	void SetMRTGRebuildDue(bool value) { MRTGRebuildDue = value; }
 	std::array<uint8_t, 16> GetSessionKey(void) const { return(SessionKey); }
 	std::array<uint8_t, 16> SetSessionKey(const std::array<uint8_t, 16>& value) { auto oldValue = SessionKey; SessionKey = value; return(oldValue); }
 	std::map<std::string, std::string> bluez_Characteristics;
@@ -976,6 +980,7 @@ private:
 	unsigned IncompleteDownloads;
 	time_t IncompleteDownloadTime;
 	bool NotifySessions;
+	bool MRTGRebuildDue;
 };
 Govee_Device::ConnectionState Govee_Device::NextState(void)
 {
@@ -1899,7 +1904,7 @@ std::filesystem::path GenerateCacheFileName(const bdaddr_t& TheBlueToothAddress,
 	std::filesystem::path CacheFileName(CacheDirectory / OutputFilename.str());
 	return(CacheFileName);
 }
-template <typename T> bool GenerateCacheFile(const bdaddr_t& TheBlueToothAddress, const std::vector<T>& MRTGLog)
+template <typename T> bool GenerateCacheFile(const bdaddr_t& TheBlueToothAddress, const std::vector<T>& MRTGLog, const bool bForce = false)
 {
 	bool rval(false);
 	if (!MRTGLog.empty())
@@ -1907,7 +1912,7 @@ template <typename T> bool GenerateCacheFile(const bdaddr_t& TheBlueToothAddress
 		std::filesystem::path MRTGCacheFile(GenerateCacheFileName(TheBlueToothAddress, MRTGLog[0].GetModel()));
 		struct stat64 Stat({ 0 });	// Zero the stat64 structure when it's allocated
 		stat64(MRTGCacheFile.c_str(), &Stat);	// This shouldn't change Stat if the file doesn't exist.
-		if (difftime(MRTGLog[0].Time, Stat.st_mtim.tv_sec) > 60 * 60) // If Cache File has data older than 60 minutes, write it
+		if (bForce || (difftime(MRTGLog[0].Time, Stat.st_mtim.tv_sec) > 60 * 60)) // If Cache File has data older than 60 minutes, write it
 		{
 			std::ofstream CacheFile(MRTGCacheFile, std::ios_base::out | std::ios_base::trunc);
 			if (CacheFile.is_open())
@@ -2706,6 +2711,46 @@ void MonitorLoggedData(const int SecondsRecent = 35*60)
 						ReadLoggedData(filename);
 		}
 	}
+}
+
+// UpdateMRTGData discards anything older than the newest sample it has seen, so downloaded history written to the
+// log files never reaches the graph buffers. Dropping the device's buffers and re-reading its log files is the same
+// rebuild as moving the cache files aside and restarting, without the restart.
+void RebuildMRTGData(const bdaddr_t& TheAddress)
+{
+	if (!LogDirectory.empty())
+	{
+		GoveeMRTGLogs.erase(TheAddress);
+		RuuviMRTGLogs.erase(TheAddress);
+		std::string btAddress(ba2string(TheAddress));
+		for (auto pos = btAddress.find(':'); pos != std::string::npos; pos = btAddress.find(':'))
+			btAddress.erase(pos, 1);
+		const std::regex LogFileRegex("(gvh|ruuvi)-" + btAddress + "-[[:digit:]]{4}-[[:digit:]]{2}.txt", std::regex::icase);
+		std::deque<std::filesystem::path> files;
+		for (auto const& dir_entry : std::filesystem::directory_iterator{ LogDirectory })
+			if (dir_entry.is_regular_file())
+				if (std::regex_match(dir_entry.path().filename().string(), LogFileRegex))
+					files.push_back(dir_entry);
+		sort(files.begin(), files.end());
+		for (auto const& file : files)
+			ReadLoggedData(file);
+	}
+}
+// Rebuild once the download has finished and its records have been flushed to the log files. A device mid-download
+// or in its retry back-off is skipped so it isn't rebuilt on every log flush; bIncludeBusy forces it at shutdown.
+void RebuildDueMRTGData(const bool bIncludeBusy = false)
+{
+	if (!SVGDirectory.empty())	// the graph buffers are only maintained when graphs are being written
+		for (auto& [btAddress, device] : GoveeDevices)
+			if (device.IsMRTGRebuildDue() && (bIncludeBusy || (device.GetState() == Govee_Device::ConnectionState::Disconnected)))
+			{
+				RebuildMRTGData(btAddress);
+				device.SetMRTGRebuildDue(false);
+				// Write the cache now rather than at its next hourly write, so a restart in between doesn't lose the rebuild
+				auto it = GoveeMRTGLogs.find(btAddress);
+				if ((it != GoveeMRTGLogs.end()) && !CacheDirectory.empty())
+					GenerateCacheFile(btAddress, it->second, true);
+			}
 }
 bool ReadTitleMap(const std::filesystem::path& TitleMapFilename)
 {
@@ -4900,7 +4945,10 @@ void BlueZ_HCI_MainLoop(std::string& ControllerAddress, std::set<bdaddr_t>& BT_W
 														bt_LEScan(BlueToothDevice_Handle, false, BT_WhiteList, HCI_Passive_Scanning);
 														time_t DownloadTime = BlueZ_HCI_ConnectAndDownload(BlueToothDevice_Handle, CurrentDeviceMap->second, BatteryToRecord);
 														if (DownloadTime > 0)
+														{
 															CurrentDeviceMap->second.SetLastDownload(DownloadTime);
+															CurrentDeviceMap->second.SetMRTGRebuildDue(true);
+														}
 														btRVal = bt_LEScan(BlueToothDevice_Handle, true, BT_WhiteList, HCI_Passive_Scanning);
 														if (btRVal < 0)
 														{
@@ -4950,6 +4998,7 @@ void BlueZ_HCI_MainLoop(std::string& ControllerAddress, std::set<bdaddr_t>& BT_W
 										std::cout << "[" << getTimeISO8601(true) << "] " << std::dec << LogFileTime << " seconds or more have passed. Writing LOG Files" << std::endl;
 									TimeStart = TimeNow;
 									GenerateLogFile(GoveeTemperatures);
+									RebuildDueMRTGData();
 									GeneratePersistenceFile(GoveeThermometers, GoveeDevices);
 									GenerateCacheFile(GoveeMRTGLogs); // flush FakeMRTG data to cache files
 									GenerateLogFile(RuuviTags);
@@ -4981,6 +5030,7 @@ void BlueZ_HCI_MainLoop(std::string& ControllerAddress, std::set<bdaddr_t>& BT_W
 			}
 			hci_close_dev(BlueToothDevice_Handle);
 			GenerateLogFile(GoveeTemperatures); // flush contents of accumulated map to logfiles
+			RebuildDueMRTGData(true);
 			GeneratePersistenceFile(GoveeThermometers, GoveeDevices);
 			GenerateLogFile(RuuviTags); // flush contents of accumulated map to logfiles
 		}
@@ -6550,7 +6600,10 @@ std::string bluez_dbus_msg_iter(DBusMessageIter& array_iter, const bdaddr_t& dbu
 									LastReportedTime = localTemp.Time;
 								}
 								if (LastReportedTime != 0)
+								{
 									GoveeDevice->second.SetLastDownload(LastReportedTime);
+									GoveeDevice->second.SetMRTGRebuildDue(true);
+								}
 								if (offset <= 6)	// If offset is 6 or less we are in the last bit of data, and as soon as we decode it we can close the connection.
 								{
 									GoveeDevice->second.SetDownloadComplete();
@@ -7115,6 +7168,7 @@ int BlueZ_DBus_Mainloop(std::string& ControllerAddress, std::set<bdaddr_t>& BT_W
 									std::cout << "[" << getTimeISO8601(true) << "] " << std::dec << LogFileTime << " seconds or more have passed. Writing LOG Files" << std::endl;
 								TimeLog = TimeNow;
 								GenerateLogFile(GoveeTemperatures);
+								RebuildDueMRTGData();
 								GeneratePersistenceFile(GoveeThermometers, GoveeDevices);
 								GenerateCacheFile(GoveeMRTGLogs); // flush FakeMRTG data to cache files
 								GenerateLogFile(RuuviTags);
@@ -7212,6 +7266,7 @@ int BlueZ_DBus_Mainloop(std::string& ControllerAddress, std::set<bdaddr_t>& BT_W
 		}
 	}
 	GenerateLogFile(GoveeTemperatures); // flush contents of accumulated map to logfiles
+	RebuildDueMRTGData(true);
 	GeneratePersistenceFile(GoveeThermometers, GoveeDevices);
 	GenerateLogFile(RuuviTags); // flush contents of accumulated map to logfiles
 	return(rVal);
